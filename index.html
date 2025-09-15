@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>希望休入力システム</title>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    body { font-family: sans-serif; padding: 18px; }
+    label { display: block; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>希望休入力</h1>
+
+  <div id="gsi-button"></div>
+  <div id="user-info" style="display:none">
+    <p id="welcome"></p>
+    <form id="shiftForm">
+      <label>開始日時<input type="datetime-local" id="start" required></label>
+      <label>終了日時<input type="datetime-local" id="end" required></label>
+      <label>備考<textarea id="note"></textarea></label>
+      <button type="submit">送信</button>
+    </form>
+    <p id="status"></p>
+  </div>
+
+  <script>
+    const CLIENT_ID = "916036404950-3f2fms1rsofri703hqmuoakc8uqv86tq.apps.googleusercontent.com";
+    const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbxwAJiR7IPGZJNGPNyEenkGvb3i-peBKRUluA04yE3fc2ll32uFyKrBFV0BbcmwT8BOhA/exec";
+
+    let lastIdToken = null;
+
+    window.onload = () => {
+      google.accounts.id.initialize({
+        client_id: CLIENT_ID,
+        callback: handleCredentialResponse
+      });
+      google.accounts.id.renderButton(
+        document.getElementById("gsi-button"),
+        { theme: "outline", size: "large" }
+      );
+    };
+
+    function handleCredentialResponse(response) {
+      lastIdToken = response.credential;
+      const payload = parseJwt(lastIdToken);
+      document.getElementById("welcome").textContent =
+        `ログイン済み: ${payload.email}`;
+      document.getElementById("gsi-button").style.display = "none";
+      document.getElementById("user-info").style.display = "block";
+    }
+
+    // IDトークンをデコード（確認用）
+    function parseJwt (token) {
+      const base64Url = token.split('.')[1];
+      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+      return JSON.parse(decodeURIComponent(atob(base64).split('').map(function(c) {
+        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+      }).join('')));
+    }
+
+    // フォーム送信
+    document.getElementById("shiftForm").addEventListener("submit", function(e){
+      e.preventDefault();
+      if (!lastIdToken) { alert("ログインしてください"); return; }
+
+      const payload = {
+        idToken: lastIdToken,
+        start: document.getElementById("start").value,
+        end: document.getElementById("end").value,
+        note: document.getElementById("note").value
+      };
+
+      fetch(GAS_ENDPOINT, {
+        method: "POST",
+        body: JSON.stringify(payload)
+      }).then(res => res.json()).then(res => {
+        if (res.ok) {
+          document.getElementById("status").textContent = "送信完了！";
+        } else {
+          document.getElementById("status").textContent = "送信失敗: " + res.error;
+        }
+      }).catch(err => {
+        document.getElementById("status").textContent = "エラー: " + err;
+      });
+    });
+  </script>
+</body>
+</html>
