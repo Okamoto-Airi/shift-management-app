@@ -4,9 +4,11 @@
   <meta charset="utf-8">
   <title>希望休入力システム</title>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.13/index.global.min.js'></script>
   <style>
-    body { font-family: sans-serif; padding: 18px; }
+    body { font-family: sans-serif; padding: 18px; max-width: 900px; margin: auto; }
     label { display: block; margin-top: 8px; }
+    #calendar { margin-top: 2rem; }
   </style>
 </head>
 <body>
@@ -15,13 +17,22 @@
   <div id="gsi-button"></div>
   <div id="user-info" style="display:none">
     <p id="welcome"></p>
-    <form id="shiftForm">
-      <label>開始日時<input type="datetime-local" id="start" required></label>
-      <label>終了日時<input type="datetime-local" id="end" required></label>
-      <label>備考<textarea id="note"></textarea></label>
-      <button type="submit">送信</button>
-    </form>
-    <p id="status"></p>
+    
+    <div id="form-section">
+      <h2>希望休を提出</h2>
+      <form id="shiftForm">
+        <label>開始日時<input type="datetime-local" id="start" required></label>
+        <label>終了日時<input type="datetime-local" id="end" required></label>
+        <label>備考<textarea id="note"></textarea></label>
+        <button type="submit">送信</button>
+      </form>
+      <p id="status"></p>
+    </div>
+
+    <div id="admin-section" style="display:none;">
+      <h2>提出済み希望休カレンダー</h2>
+      <div id="calendar"></div>
+    </div>
   </div>
 
   <script>
@@ -29,6 +40,7 @@
     const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbyC9LUE2515aCfhp0ctdh0ipKeGolq8Jpzon6Ye3myQVLvxpQJX8CVUDWa44TytzMI0wA/exec";
 
     let lastIdToken = null;
+    let calendar = null;
 
     window.onload = () => {
       google.accounts.id.initialize({
@@ -41,28 +53,66 @@
       );
     };
 
-    function handleCredentialResponse(response) {
+    // Google認証後の処理
+    async function handleCredentialResponse(response) {
       lastIdToken = response.credential;
-      const payload = parseJwt(lastIdToken);
-      document.getElementById("welcome").textContent =
-        `ログイン済み: ${payload.email}`;
-      document.getElementById("gsi-button").style.display = "none";
-      document.getElementById("user-info").style.display = "block";
+      
+      // GASにユーザー情報を問い合わせる
+      const res = await fetch(`${GAS_ENDPOINT}?action=getUserInfo&idToken=${lastIdToken}`);
+      const userInfo = await res.json();
+
+      if (userInfo && userInfo.isAllowed) {
+        document.getElementById("welcome").textContent = `ようこそ、${userInfo.name || userInfo.email}さん`;
+        document.getElementById("gsi-button").style.display = "none";
+        document.getElementById("user-info").style.display = "block";
+
+        // もしユーザーが管理者(admin)なら、カレンダーを表示
+        if (userInfo.role === 'admin') {
+          document.getElementById("admin-section").style.display = "block";
+          initializeCalendar();
+        }
+      } else {
+        alert("このシステムを利用する権限がありません。");
+        lastIdToken = null;
+      }
+    }
+    
+    // カレンダーの初期化と描画
+    async function initializeCalendar() {
+        const calendarEl = document.getElementById('calendar');
+        calendar = new FullCalendar.Calendar(calendarEl, {
+            initialView: 'dayGridMonth',
+            locale: 'ja',
+            headerToolbar: {
+                left: 'prev,next today',
+                center: 'title',
+                right: 'dayGridMonth,timeGridWeek,listWeek'
+            },
+            // GASからイベントデータを取得する
+            events: async function(fetchInfo, successCallback, failureCallback) {
+                try {
+                    const res = await fetch(`${GAS_ENDPOINT}?action=getEvents&idToken=${lastIdToken}`);
+                    const data = await res.json();
+                    if(data.ok) {
+                        successCallback(data.events);
+                    } else {
+                        throw new Error(data.error);
+                    }
+                } catch (err) {
+                    failureCallback(err);
+                }
+            }
+        });
+        calendar.render();
     }
 
-    // IDトークンをデコード（確認用）
-    function parseJwt (token) {
-      const base64Url = token.split('.')[1];
-      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-      return JSON.parse(decodeURIComponent(atob(base64).split('').map(function(c) {
-        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-      }).join('')));
-    }
-
-    // フォーム送信
-    document.getElementById("shiftForm").addEventListener("submit", function(e){
+    // フォーム送信時の処理
+    document.getElementById("shiftForm").addEventListener("submit", async function(e){
       e.preventDefault();
       if (!lastIdToken) { alert("ログインしてください"); return; }
+      
+      const statusEl = document.getElementById("status");
+      statusEl.textContent = "送信中...";
 
       const payload = {
         idToken: lastIdToken,
@@ -71,19 +121,29 @@
         note: document.getElementById("note").value
       };
 
-      fetch(GAS_ENDPOINT, {
-        method: "POST",
-        body: JSON.stringify(payload)
-      }).then(res => res.json()).then(res => {
-        if (res.ok) {
-          document.getElementById("status").textContent = "送信完了！";
+      try {
+        const res = await fetch(GAS_ENDPOINT, {
+          method: "POST",
+          body: JSON.stringify(payload),
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const result = await res.json();
+        
+        if (result.ok) {
+          statusEl.textContent = "送信完了！";
+          document.getElementById("shiftForm").reset(); // フォームをリセット
+          // 管理者の場合、カレンダーを再読み込みして最新の状態にする
+          if (calendar) {
+            calendar.refetchEvents();
+          }
         } else {
-          document.getElementById("status").textContent = "送信失敗: " + res.error;
+          statusEl.textContent = "送信失敗: " + result.error;
         }
-      }).catch(err => {
-        document.getElementById("status").textContent = "エラー: " + err;
-      });
+      } catch (err) {
+        statusEl.textContent = "エラー: " + err;
+      }
     });
+
   </script>
 </body>
 </html>
